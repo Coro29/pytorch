@@ -1,5 +1,7 @@
 import torch
 import unittest
+import itertools
+
 from torch.testing._internal.common_utils import TestCase, run_tests, TEST_WITH_ROCM, TEST_WITH_SLOW
 from torch.testing._internal.common_device_type import \
     (instantiate_device_type_tests, dtypes, skipCUDAIfRocm, ops)
@@ -388,13 +390,18 @@ class TestForeach(TestCase):
 
     @dtypes(*torch.testing.get_all_dtypes())
     def test_add_scalar_with_empty_list_and_empty_tensor(self, device, dtype):
-        # TODO: enable empty list case
         for tensors in [[torch.randn([0])]]:
             res = torch._foreach_add(tensors, 1)
             self.assertEqual(res, tensors)
 
             torch._foreach_add_(tensors, 1)
             self.assertEqual(res, tensors)
+
+        with self.assertRaisesRegex(RuntimeError, "There were no tensor arguments to this function"):
+            torch._foreach_add([], 1)
+
+        with self.assertRaisesRegex(RuntimeError, "There were no tensor arguments to this function"):
+            torch._foreach_add_([], 1)
 
     @dtypes(*torch.testing.get_all_dtypes())
     def test_add_scalar_with_overlapping_tensors(self, device, dtype):
@@ -407,11 +414,6 @@ class TestForeach(TestCase):
 
         res = torch._foreach_add(tensors, 1)
         self.assertEqual(res, expected)
-
-    def test_bin_op_scalar_with_different_tensor_dtypes(self, device):
-        tensors = [torch.tensor([1.1], dtype=torch.float, device=device),
-                   torch.tensor([1], dtype=torch.long, device=device)]
-        self.assertRaises(RuntimeError, lambda: torch._foreach_add(tensors, 1))
 
     #
     # Ops with list
@@ -442,15 +444,6 @@ class TestForeach(TestCase):
             with self.assertRaisesRegex(RuntimeError, "Tensor lists must have the same number of tensors, got 1 and 2"):
                 bin_op_(tensors1, tensors2)
 
-            # Different dtypes
-            tensors1 = [torch.zeros(10, 10, device=device, dtype=torch.float) for _ in range(10)]
-            tensors2 = [torch.ones(10, 10, device=device, dtype=torch.int) for _ in range(10)]
-
-            with self.assertRaisesRegex(RuntimeError, "All tensors in the tensor list must have the same dtype."):
-                bin_op(tensors1, tensors2)
-            with self.assertRaisesRegex(RuntimeError, "All tensors in the tensor list must have the same dtype."):
-                bin_op_(tensors1, tensors2)
-
             # different devices
             if torch.cuda.is_available() and torch.cuda.device_count() > 1:
                 tensor1 = torch.zeros(10, 10, device="cuda:0")
@@ -472,11 +465,13 @@ class TestForeach(TestCase):
     def test_add_list_different_sizes(self, device, dtype):
         tensors1 = [torch.zeros(10 + n, 10 + n, device=device, dtype=dtype) for n in range(10)]
         tensors2 = [torch.ones(10 + n, 10 + n, device=device, dtype=dtype) for n in range(10)]
+        expected = [torch.add(a, b) for a, b in zip(tensors1, tensors2)]
 
         res = torch._foreach_add(tensors1, tensors2)
+        self.assertEqual(res, expected)
+
         torch._foreach_add_(tensors1, tensors2)
-        self.assertEqual(res, tensors1)
-        self.assertEqual(res, [torch.ones(10 + n, 10 + n, device=device, dtype=dtype) for n in range(10)])
+        self.assertEqual(expected, tensors1)
 
     @unittest.skipIf(not torch.cuda.is_available(), "CUDA not found")
     @dtypes(*torch.testing.get_all_dtypes())
